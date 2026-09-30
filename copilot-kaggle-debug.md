@@ -1,314 +1,344 @@
-I dug through the current kev-wcag repo, the Kaggle notebook, and upstream Kev. The Qwen2 import failure is a symptom of a dependency/version mismatch, and there are a few additional problems that will hit immediately after that one.
+I inspected the attached wcag_train_kev.jsonl, and it tells us something important.
 
-What is actually going wrong
+The conversion itself succeeded
 
-Your Kaggle notebook currently does this:
+The file contains exactly 200 valid JSONL records. Every record has the expected top-level structure:
 
-# notebook
-# Transformers environment is 4.49.0
+state
+questions
+_meta
+
+and the questions have the expected Kev-style fields (type, instructions, label, and criteria where applicable). For example, the first records correctly encode a non-violation as false / None / 0, while the image-without-alt example is true / 1.1.1 / 4. 
+
+So the Qwen/Kev import problem is definitely behind us: the notebook successfully produced a dataset in the format it intended to feed into Kev.
+
+But I see a significant dataset-quality problem
+
+The 200 examples are not 200 unique WCAG examples.
+
+There are only 20 unique _meta.pattern values, repeated to make 200 records.
+
+For example:
+
+Image without alt → 11 copies
+
+Missing lang → 12 copies
+
+Has label → 19 copies
+
+Has lang → 16 copies
+
+Image with alt → 17 copies
+
+Link no text → 13 copies
+
+
+And each repeated pattern has identical labels.
+
+For instance, every Image without alt record is:
+
+has_violation = true
+criterion     = 1.1.1
+severity      = 4
+
+The examples are therefore effectively duplicated training samples rather than independent WCAG cases. The attached file shows this repetition throughout the dataset.  
+
+Distribution
+
+I counted:
+
+Label	Count
+
+No violation	109
+Violation	91
+Severity 0	109
+Severity 2	36
+Severity 3	34
+Severity 4	21
+
+
+There are no severity 1 examples.
+
+The criterion distribution is also very small:
+
+WCAG criterion	Count
+
+None	109
+1.3.1	33
+2.4.4	13
+3.1.1	12
+1.1.1	11
+2.4.7	9
+1.4.3	8
+4.1.2	5
+
+
+This changes my assessment of the Kaggle run
+
+If the Kaggle notebook successfully trained on this file, then:
+
+Yes, it probably did perform a technically valid training run.
+
+But:
+
+No, I would not yet consider it a successful WCAG-trained Kev model.
+
+The reason is not the Qwen2/Kev import issue anymore. The bigger issue is that the training set is essentially:
+
+20 synthetic WCAG patterns
+×
+repeated examples
+=
+200 records
+
+That makes it very easy for a small model to memorize the training patterns.
+
+For example, the model could learn:
+
+<img src="photo.jpg">
+→ violation
+→ 1.1.1
+→ severity 4
+
+without learning the more general accessibility reasoning you actually want Kev to learn.
+
+The same applies to <input> without a label, empty buttons, empty headings, missing lang, etc. The attached data explicitly repeats these patterns with identical answers. 
+
+One particularly important problem
+
+Your state values are:
+
+WCAG pattern 1
+WCAG pattern 2
 ...
-pip install git+https://github.com/jaredpalmer/kev.git
+WCAG pattern 200
+
+but _meta.pattern only identifies 20 actual concepts.
+
+So the apparent 200-example dataset is somewhat misleading. state is changing, but the actual HTML/question/answer combinations are heavily duplicated.
+
+What I would do before trusting the trained model
+
+I would not retrain yet.
+
+First, fix the dataset generation so that you have substantially more variation per WCAG concept:
+
+1.1.1
+ ├─ <img src="x">
+ ├─ <img src="x" class="...">
+ ├─ decorative image
+ ├─ informative image
+ ├─ image with incorrect alt
+ ├─ SVG
+ ├─ linked image
+ └─ ...
+
+and similarly for:
+
+1.3.1
+3.1.1
+1.4.3
+2.4.4
+2.4.7
+4.1.2
 ...
-for mn in ['Qwen/Qwen2-0.5B','Qwen/Qwen2-7B']:
-    m = kev.model.AutoModelForCausalLM.from_pretrained(...)
 
-The important part is that the notebook is trying to make a newer Kev work inside a Transformers 4.49.0 environment by patching transformers internals. Your own notebook explicitly patches generic.py, import_utils.py, and auto_docstring.py before importing Kev.
+Then split into train/test by underlying pattern, rather than randomly splitting the duplicated rows. Otherwise the same HTML pattern can occur in both train and test and produce an artificially impressive score.
 
-That is the wrong direction.
+Bottom line
 
-The upstream Kev revision that produced the original 0.5B model requires:
+wcag_train_kev.jsonl is structurally valid and the conversion step worked. 
 
-transformers >=4.51,<4.58
-peft >=0.15
-torch >=2.6,<2.9
-numpy >=2.5.3
+But the dataset currently looks like a 200-row synthetic repetition of 20 WCAG patterns, not a sufficiently diverse WCAG training corpus.
 
-and its actual base model is Qwen/Qwen2.5-0.5B, not Qwen/Qwen2-0.5B.
+So the next thing I would verify is the actual Kaggle training output/checkpoint and inference result. If you upload the model output from Kaggle (especially adapter_model.safetensors/checkpoint plus the training log), I can determine whether the 200-row dataset was actually optimized into a Kev adapter and then test whether the resulting model has learned anything beyond memorizing these 20 patterns.
+"""
+That's fine. We don't need the 35.24 MB adapter_model.safetensors file uploaded here. In fact, the file's existence is already useful evidence that the training pipeline produced a LoRA adapter.
 
-The current upstream Kev has moved on again and now requires:
+What we need now is to verify what is inside it and whether it is actually the adapter produced by the WCAG training run.
 
-transformers >=5.17,<6
-peft >=0.21
-torch >=2.6,<2.9
-numpy >=2.5.3
+Best way to verify it from Kaggle
 
-and uses Qwen3.5/Qwen3.8 for the current generation.
+Run this in the same Kaggle notebook, after training:
 
-So your notebook is effectively doing:
+from pathlib import Path
+import json
+import os
 
-Kaggle Transformers 4.49
-        ↓
-monkey patches
-        ↓
-latest Kev main
-        ↓
-Qwen2 test model
+OUT = Path("/kaggle/working/kev-wcag")
 
-Those components were never a coherent supported environment.
+print("=== OUTPUT FILES ===")
+for p in sorted(OUT.rglob("*")):
+    if p.is_file():
+        print(f"{p.relative_to(OUT)}  {p.stat().st_size / 1024 / 1024:.2f} MB")
 
-Qwen2 itself is not the problem
+Then inspect the adapter:
 
-Current Transformers does support Qwen2ForCausalLM, and Qwen/Qwen2-0.5B is still present in the Transformers test suite.
+from safetensors import safe_open
 
-The problem is that Kev wasn't designed around that checkpoint.
+adapter = OUT / "adapter_model.safetensors"
 
-The original Kev-0.5B checkpoint was trained on:
+print("Adapter exists:", adapter.exists())
+print("Adapter size:", adapter.stat().st_size / 1024 / 1024, "MB")
 
-Qwen/Qwen2.5-0.5B
+with safe_open(adapter, framework="pt") as f:
+    keys = list(f.keys())
 
-with a 896-dimensional hidden representation.
+print("Number of tensors:", len(keys))
+print("\nFirst 30 tensors:")
+for key in keys[:30]:
+    print(key)
 
-Your Kaggle notebook instead tests:
+The tensor names are particularly important. We should see LoRA/adapter parameters rather than a complete base-model weight dump.
 
-Qwen/Qwen2-0.5B
-Qwen/Qwen2-7B
+Then verify the adapter configuration
 
-So even getting Qwen2 to import would not make this the intended Kev training setup.
+There should normally also be an adapter_config.json. Run:
 
-There is an even bigger inconsistency in your repository
+print("\n=== adapter_config.json ===")
 
-Your README says:
+config_file = OUT / "adapter_config.json"
 
-from kev.model import AutoModelForCausalLM
-model = AutoModelForCausalLM.from_pretrained("jaredpalmer/kev-4b")
+if config_file.exists():
+    print(config_file.read_text())
+else:
+    print("MISSING")
 
-but your actual copied training/train.py defaults to:
+This will tell us things such as:
 
---base Qwen/Qwen3-0.6B-Base
+base model used;
 
-and constructs:
+LoRA rank;
 
-DecisionModel(a.base, ...)
+target modules;
 
-Your training/model.py also loads the base through Hugging Face's AutoModelForCausalLM.
+LoRA alpha;
 
-That means the README, Kaggle notebook, and training code are from different generations of Kev.
+dropout;
 
-The current upstream trainer itself now defaults to Qwen/Qwen3-0.6B-Base.
+PEFT configuration.
 
-I would stop patching Transformers entirely
 
-The clean Kaggle strategy is:
+Most important test: reload the trained adapter
 
-Python 3.12
-    ↓
-supported Transformers
-    ↓
-single pinned Kev version
-    ↓
-Qwen3-0.6B-Base
-    ↓
-your WCAG data
+This is the test I would trust much more than merely seeing adapter_model.safetensors.
 
-For a Tesla T4, I'd use Qwen3-0.6B-Base, rather than jumping to Qwen3.5-4B/9B. The current upstream Qwen3-0.6B setup is specifically documented and the model has a 32,768-token base context.
-
-Recommended replacement for your Kaggle setup
-
-Delete the huge Transformer monkey-patching cell.
-
-Use this instead:
-
-# Clean Kaggle environment for Kev + Qwen3-0.6B
-
-!pip install -q -U \
-    "numpy>=2.5.3,<3" \
-    "transformers>=5.17,<6" \
-    "peft>=0.21" \
-    "accelerate>=1.15" \
-    "datasets>=3.0" \
-    "scikit-learn>=1.9.1"
-
-!pip install -q \
-    "git+https://github.com/jaredpalmer/kev.git"
-
-import sys
 import torch
-import numpy
-import transformers
-import peft
-import kev
-
-print("Python:", sys.version)
-print("PyTorch:", torch.__version__)
-print("NumPy:", numpy.__version__)
-print("Transformers:", transformers.__version__)
-print("PEFT:", peft.__version__)
-print("Kev:", kev.__file__)
-print("CUDA:", torch.cuda.is_available())
-
-if torch.cuda.is_available():
-    print("GPU:", torch.cuda.get_device_name(0))
-
-Do not add trust_remote_code=True as a workaround. Qwen2/Qwen3 are natively supported by Transformers.
-
-Then test the exact backbone:
-
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
 
 BASE = "Qwen/Qwen3-0.6B-Base"
+OUT = "/kaggle/working/kev-wcag"
 
 tokenizer = AutoTokenizer.from_pretrained(BASE)
 
-model = AutoModelForCausalLM.from_pretrained(
+base = AutoModelForCausalLM.from_pretrained(
     BASE,
     dtype=torch.float32,
-    attn_implementation="sdpa",
+    device_map="auto",
 )
 
-print(type(model).__name__)
-print("hidden size:", model.config.hidden_size)
-print("model type:", model.config.model_type)
+model = PeftModel.from_pretrained(
+    base,
+    OUT,
+)
 
-del model
-torch.cuda.empty_cache()
+model.eval()
 
-The Qwen3-0.6B config identifies itself as model_type: "qwen3" and Qwen3ForCausalLM.
+print("Loaded trained adapter successfully")
+print("Trainable parameters:", sum(
+    p.numel() for p in model.parameters() if p.requires_grad
+))
+print("Total parameters:", sum(p.numel() for p in model.parameters()))
 
-One more blocker: your WCAG JSON isn't in the current Kev input format
+Then perform an actual WCAG inference using the reloaded adapter.
 
-Your data currently looks like:
+For example:
 
-{
-  "state": "...",
-  "questions": [
-    {
-      "type": "choice",
-      "instr": "...",
-      "options": ["...", "..."],
-      "label": 0
-    }
-  ]
-}
+prompt = """Analyze this HTML for WCAG accessibility:
 
-That's the old/internal representation used by your copied training code.
+<img src="photo.jpg">
 
-Current Kev's --data loader expects:
+Determine:
+1. Does it have a WCAG violation?
+2. Which WCAG criterion applies?
+3. What is the severity?
 
-{
-  "state": "...",
-  "questions": {
-    "which_criterion": {
-      "type": "choice",
-      "instructions": "...",
-      "criteria": {
-        "option A": null,
-        "option B": null
-      },
-      "label": "option A"
-    }
-  }
-}
+Answer concisely.
+"""
 
-with instructions, criteria, and a keyed question object.
+inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-So once the model-import issue is fixed, feeding your current wcag_train.jsonl directly into current kev.train --data will fail too.
+with torch.no_grad():
+    output = model.generate(
+        **inputs,
+        max_new_tokens=200,
+        do_sample=False,
+    )
 
-The conversion is straightforward
+print(tokenizer.decode(output[0], skip_special_tokens=True))
 
-I would add a preprocessing step like this:
+One caveat
 
-import json
+I would not use that inference alone as proof that the model learned WCAG.
+
+Given the dataset we inspected, img without alt → 1.1.1 → severity 4 is one of the repeated training patterns. The model could simply have memorized it.
+
+A much more meaningful test would be new HTML that is semantically equivalent but structurally different, for example:
+
+<img class="hero-image" src="/images/product.webp">
+
+or:
+
+<a href="/product">
+  <img src="product.jpg">
+</a>
+
+Then compare:
+
+Qwen3-0.6B-Base
+        vs
+Qwen3-0.6B + your trained adapter
+
+on examples not present in the 200 training records.
+
+
+---
+
+Even easier: you don't need to upload the 35 MB file
+
+If you run the following in Kaggle and paste the output here:
+
 from pathlib import Path
+from safetensors import safe_open
+import json
 
-src = Path("/kaggle/input/wcag-kev-training/wcag_train.jsonl")
-dst = Path("/kaggle/working/wcag_train_kev.jsonl")
+OUT = Path("/kaggle/working/kev-wcag")
 
-with src.open(encoding="utf-8") as fin, dst.open("w", encoding="utf-8") as fout:
-    for line in fin:
-        record = json.loads(line)
+for name in [
+    "adapter_config.json",
+    "training_args.bin",
+    "trainer_state.json",
+]:
+    p = OUT / name
+    print(f"\n=== {name} ===")
+    print("exists:", p.exists())
+    if p.exists() and p.suffix == ".json":
+        print(p.read_text()[:10000])
 
-        questions = {}
+adapter = OUT / "adapter_model.safetensors"
 
-        for i, q in enumerate(record["questions"]):
-            if q["type"] == "noul":
-                questions["has_violation" if i == 0 else "is_accessible"] = {
-                    "type": "noul",
-                    "instructions": q["instr"],
-                    "label": bool(q["label"]),
-                }
+print("\n=== adapter ===")
+print("exists:", adapter.exists())
+print("size:", adapter.stat().st_size if adapter.exists() else None)
 
-            elif q["type"] == "choice":
-                questions["which_criterion"] = {
-                    "type": "choice",
-                    "instructions": q["instr"],
-                    "criteria": {option: None for option in q["options"]},
-                    "label": q["options"][q["label"]],
-                }
+if adapter.exists():
+    with safe_open(adapter, framework="pt") as f:
+        keys = list(f.keys())
+        print("tensor count:", len(keys))
+        for k in keys[:50]:
+            print(k, f.get_tensor(k).shape)
 
-            elif q["type"] == "score":
-                questions["severity"] = {
-                    "type": "score",
-                    "instructions": q["instr"],
-                    "criteria": q["options"],
-                    "label": int(q["label"]),
-                }
+I can then tell you whether the 35.24 MB file is a legitimate trained LoRA adapter, what base model it belongs to, what layers were trained, and whether the Kaggle run appears to have actually produced the intended Kev model.
 
-        converted = {
-            "state": record["state"],
-            "questions": questions,
-            "_meta": record.get("_meta", {}),
-        }
-
-        fout.write(json.dumps(converted, ensure_ascii=False) + "\n")
-
-print(dst)
-
-Then the T4-friendly training invocation can be:
-
-python -m kev.train \
-  --data /kaggle/working/wcag_train_kev.jsonl \
-  --base Qwen/Qwen3-0.6B-Base \
-  --epochs 3 \
-  --lr 2e-4 \
-  --lora 16 \
-  --batch 1 \
-  --accum 8 \
-  --dtype fp32 \
-  --weights_dtype fp32 \
-  --device cuda \
-  --out /kaggle/working/kev-wcag
-
-The current Kev trainer explicitly supports custom --data, --base, --batch, --accum, --dtype, and --device settings.
-
-There is one more repository problem
-
-Your training/train.py imports:
-
-from .checkpoint import Checkpoint, Meta, write_meta
-from .device import ...
-from .data import ...
-from .suite import ...
-
-but your training/ directory, according to the repository itself, only contains:
-
-kaggle_notebook.ipynb
-train.py
-model.py
-
-So that copied training/train.py cannot function as a self-contained training package from the GitHub repo. The README currently overstates the state of the training pipeline.
-
-My recommended architecture for kev-wcag
-
-I'd simplify the repo substantially:
-
-kev-wcag/
-├── data/
-│   └── wcag/
-│       ├── wcag_train.jsonl          # your source format
-│       └── wcag_train_kev.jsonl      # generated Kev format
-├── training/
-│   ├── kaggle_notebook.ipynb
-│   └── convert_data.py
-├── evaluation/
-│   └── ...
-└── README.md
-
-and let upstream kev.train do the actual training, rather than copying pieces of Kev into training/.
-
-That avoids exactly the problem you're hitting now: upstream Kev changes while the copied model.py, copied train.py, notebook, and README quietly drift apart.
-
-One particularly important point: the current upstream project has already moved from the Qwen3 generation to Qwen3.5/Qwen3.8, while explicitly retaining the older Qwen3 models as a previous generation. For your Kaggle T4 WCAG experiment, Qwen3-0.6B is the cleanest compatibility target rather than trying to resurrect the Qwen2 path.
-
-So the immediate diagnosis is:
-
-Transformers 4.49 + monkey patches + moving Kev main + Qwen2 is the broken combination. Replace it with a coherent Qwen3/Transformers environment and convert the WCAG dataset to the current Kev schema.
+And if adapter_config.json says Qwen/Qwen3-0.6B-Base, that would also definitively confirm that we've moved past the original Qwen2 import problem.

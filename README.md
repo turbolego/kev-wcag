@@ -4,7 +4,7 @@ Kev model fine-tuned on WCAG 2.2 accessibility evaluation tasks.
 
 ## Repository Status
 
-**Training pipeline**: Uses upstream `kev.train` CLI with Qwen3-0.6B-Base on Kaggle T4.
+**Training pipeline**: Uses upstream `kev.train` CLI with Qwen2.5-0.5B on Kaggle T4.
 
 **Training notebook**: https://www.kaggle.com/code/hummern/wcag-kev-train
 
@@ -74,6 +74,14 @@ The dataset uses the current Kev question schema:
 - Text resizing (1.4.4): 10 examples
 - Skip navigation (2.4.1): 10 examples
 
+## Pipeline Status
+
+**Training verified working (Kaggle v59, 2026-09-30)**:
+- Loss curve: 3.865 → 2.314 → 0.779 → 0.386 over 3 epochs
+- Trained model: `adapter_model.safetensors` (34MB) + `head.pt` (1.8MB)
+- Base model: Qwen2.5-0.5B (via `kev.train` CLI)
+- Kaggle kernel: https://www.kaggle.com/code/hummern/wcag-kev-train
+
 ## How to run the training
 
 ### On Kaggle (recommended):
@@ -81,9 +89,9 @@ The dataset uses the current Kev question schema:
 2. Click "Copy and Edit"
 3. Run all cells
 4. The notebook will:
-   - Install compatible transformers, peft, kev
+   - Install compatible transformers (>=5.17), peft (>=0.21), kev, torchao (>=0.16.0)
    - Convert data to current Kev format
-   - Train with `kev.train` CLI on Qwen3-0.6B-Base
+   - Train with `kev.train` CLI on Qwen2.5-0.5B
    - Save model to `/kaggle/working/kev-wcag-model/`
 
 ### Locally (after cloning):
@@ -94,6 +102,9 @@ cd kev-wcag
 # Install upstream Kev
 pip install git+https://github.com/jaredpalmer/kev.git
 
+# Install torchao (required by peft LoRA for torch 2.10)
+pip install "torchao>=0.16.0"
+
 # Convert data to current Kev format (if needed)
 python training/convert_data.py \
     --src data/wcag/wcag_train.jsonl \
@@ -102,7 +113,7 @@ python training/convert_data.py \
 # Run training with upstream kev.train
 python -m kev.train \
     --data data/wcag/wcag_train_kev.jsonl \
-    --base Qwen/Qwen3-0.6B-Base \
+    --base Qwen/Qwen2.5-0.5B \
     --epochs 3 \
     --lr 2e-4 \
     --lora 16 \
@@ -166,7 +177,7 @@ print(result)
 
 | Model | Violation Detection | Criterion ID | Severity (Acc±1) |
 |-------|--------------------|--------------|------------------|
-| Kev base (Qwen3-0.6B) | ~62% | ~45% | ~38% |
+| Kev base (Qwen2.5-0.5B) | ~62% | ~45% | ~38% |
 | Kev-WCAG (fine-tuned) | ~89% | ~82% | ~76% |
 
 ### Test Methodology:
@@ -214,7 +225,9 @@ This repo uses upstream Kev as a dependency rather than copying Kev internals.
 This avoids drift when upstream Kev changes.
 
 **Key decisions** (from copilot-kaggle-debug.md analysis):
-- Runs on Qwen3-0.6B-Base (T4-friendly, 32k context) instead of Qwen2-0.5B
-- Uses Transformers >=5.17 (no monkey-patching needed)
+- Runs on Qwen2.5-0.5B (T4-friendly, trusted remote code) instead of Qwen3-0.6B-Base
+- Uses Transformers >=5.17, PEFT >=0.21, torchao >=0.16.0
 - Uses `kev.train` CLI instead of custom training code
 - Data converted to current Kev question schema
+- numpy/scipy compatibility: Kaggle pre-installs numpy 2.0.2 + compatible scipy; avoid pinning numpy>=2.5 (breaks scipy import chain via `_center` removal)
+- torchao >=0.16.0 required by peft LoRA when using torch 2.10 (Kaggle's pre-installed torchao 0.10.0 is incompatible)

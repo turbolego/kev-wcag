@@ -32,32 +32,53 @@ HTML:
     
     result = model.eval({
         "state": state,
-        "questions": [
-            {
+        "questions": {
+            "has_violation": {
                 "type": "noul",
-                "instr": f"Does this HTML pattern have a WCAG accessibility violation? Pattern: {pattern_desc}",
+                "instructions": f"Does this HTML pattern have a WCAG accessibility violation? Pattern: {pattern_desc}",
+                "label": None
             },
-            {
+            "which_criterion": {
                 "type": "choice",
-                "instr": f"Which WCAG 2.2 success criterion does this pattern violate? Pattern: {pattern_desc}",
-                "options": [
-                    "1.1.1 Non-text Content",
-                    "1.2.2 Captions",
-                    "1.3.1 Info and Relationships",
-                    "1.4.3 Contrast",
-                    "2.1.1 Keyboard",
-                    "2.4.4 Link Purpose",
-                    "2.4.7 Focus Visible",
-                    "4.1.2 Name, Role, Value",
-                    "No violation",
-                ],
+                "instructions": f"Which WCAG 2.2 success criterion does this pattern violate? Pattern: {pattern_desc}",
+                "criteria": {
+                    "1.1.1 Non-text Content - Missing alt text or text alternatives": None,
+                    "1.2.2 Captions - Missing captions for video/audio": None,
+                    "1.2.5 Audio Description - Missing audio description": None,
+                    "1.3.1 Info and Relationships - Missing semantic structure": None,
+                    "1.4.3 Contrast - Insufficient color contrast": None,
+                    "1.4.4 Resize - Text cannot be resized": None,
+                    "2.1.1 Keyboard - Not keyboard accessible": None,
+                    "2.4.1 Bypass Blocks - No skip link": None,
+                    "2.4.4 Link Purpose - Non-descriptive link text": None,
+                    "2.4.6 Headings - Missing/incorrect headings": None,
+                    "2.4.7 Focus Visible - Missing focus indicator": None,
+                    "2.5.8 Target Size - Touch target too small": None,
+                    "3.1.1 Language - Missing lang attribute": None,
+                    "4.1.2 Name Role Value - ARIA/semantic issues": None,
+                    "3.3.2 Labels - Incorrect form labels": None,
+                    "No WCAG 2.2 violation - this pattern is accessible": None,
+                },
+                "label": None
             },
-            {
+            "severity": {
                 "type": "score",
-                "instr": f"Rate the accessibility severity (0=no issue, 1=minor, 2=moderate, 3=significant, 4=critical)",
-                "options": ["0", "1", "2", "3", "4"],
+                "instructions": f"Rate the accessibility severity (0=no issue, 1=minor, 2=moderate, 3=significant, 4=critical). Pattern: {pattern_desc}",
+                "criteria": [
+                    "0: No accessibility issue",
+                    "1: Minor issue, low impact",
+                    "2: Moderate issue, affects some users",
+                    "3: Significant issue, affects many users",
+                    "4: Critical issue, blocks access entirely"
+                ],
+                "label": None
             },
-        ],
+            "is_accessible": {
+                "type": "noul",
+                "instructions": f"Is this HTML pattern fully accessible per WCAG 2.2? Pattern: {pattern_desc}",
+                "label": None
+            },
+        },
     })
     
     return {

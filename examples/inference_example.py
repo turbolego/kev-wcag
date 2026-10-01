@@ -1,129 +1,179 @@
 #!/usr/bin/env python3
-"""Example usage of the Kev-WCAG model for accessibility evaluation."""
+"""Example usage of the Kev-WCAG model for accessibility evaluation.
+
+This script demonstrates how to load a trained Kev-WCAG checkpoint and
+run accessibility evaluations on HTML patterns using the Kev typed-question API.
+"""
 
 import json
 from pathlib import Path
 
 
-def load_model(model_path: str):
-    """Load the Kev-WCAG model."""
-    from kev.model import AutoModelForCausalLM
-    
-    # Try to load local model first, then fallback to remote
-    if Path(model_path).exists():
-        model = AutoModelForCausalLM.from_pretrained(model_path)
+def load_kev_model(model_path: str, device: str = "cpu"):
+    """Load a trained Kev checkpoint.
+
+    Uses Kev's Checkpoint API to load base model + LoRA adapter + head.
+    Returns (model, tokenizer) where model supports .eval() with typed questions.
+    """
+    from kev.checkpoint import Checkpoint
+
+    ckpt = Checkpoint(model_path)
+    loaded = ckpt.load(device=device)
+    # Checkpoint.load returns (tokenizer, model)
+    if len(loaded) == 2:
+        tok, model = loaded
     else:
-        # Use HuggingFace model if available
-        model = AutoModelForCausalLM.from_pretrained(model_path)
-    
-    return model
+        model = loaded[0]
+        tok = loaded[1]
+    return model, tok
 
 
-def evaluate_pattern(model, html: str, pattern_desc: str) -> dict:
-    """Evaluate a single HTML pattern for accessibility issues."""
-    
-    state = f"""Identify accessibility issues in this HTML pattern.
+def evaluate_html(model, tok, html: str, description: str) -> dict:
+    """Evaluate a single HTML pattern for WCAG accessibility.
 
-Pattern: {pattern_desc}
+    Uses Kev's typed-question interface with noul/choice/score questions.
+    """
+    state = (
+        f"Analyze this HTML for WCAG 2.2 accessibility issues.\n\n"
+        f"HTML pattern: {description}\n\n"
+        f"HTML:\n{html}\n\n"
+        f"Please answer the following questions about accessibility compliance."
+    )
 
-HTML:
-{html}
-"""
-    
-    result = model.eval({
+    # Run the model evaluation with typed questions
+    prediction = model.eval({
         "state": state,
         "questions": {
             "has_violation": {
                 "type": "noul",
-                "instructions": f"Does this HTML pattern have a WCAG accessibility violation? Pattern: {pattern_desc}",
-                "label": None
+                "instructions": "Does this HTML have a WCAG 2.2 accessibility violation?",
+                "criteria": {"true": "Yes, violation present", "false": "No violation"},
             },
             "which_criterion": {
                 "type": "choice",
-                "instructions": f"Which WCAG 2.2 success criterion does this pattern violate? Pattern: {pattern_desc}",
+                "instructions": "Which WCAG 2.2 success criterion is violated?",
                 "criteria": {
-                    "1.1.1 Non-text Content - Missing alt text or text alternatives": None,
-                    "1.2.2 Captions - Missing captions for video/audio": None,
-                    "1.2.5 Audio Description - Missing audio description": None,
-                    "1.3.1 Info and Relationships - Missing semantic structure": None,
-                    "1.4.3 Contrast - Insufficient color contrast": None,
-                    "1.4.4 Resize - Text cannot be resized": None,
-                    "2.1.1 Keyboard - Not keyboard accessible": None,
-                    "2.4.1 Bypass Blocks - No skip link": None,
-                    "2.4.4 Link Purpose - Non-descriptive link text": None,
-                    "2.4.6 Headings - Missing/incorrect headings": None,
-                    "2.4.7 Focus Visible - Missing focus indicator": None,
-                    "2.5.8 Target Size - Touch target too small": None,
-                    "3.1.1 Language - Missing lang attribute": None,
-                    "4.1.2 Name Role Value - ARIA/semantic issues": None,
-                    "3.3.2 Labels - Incorrect form labels": None,
-                    "No WCAG 2.2 violation - this pattern is accessible": None,
+                    "1.1.1 Non-text Content": "Missing text alternatives for non-text content",
+                    "1.3.1 Info and Relationships": "Missing semantic structure or relationships",
+                    "1.4.3 Contrast": "Insufficient color contrast",
+                    "2.4.4 Link Purpose": "Link purpose not clear from link text",
+                    "2.4.7 Focus Visible": "Keyboard focus indicator not visible",
+                    "4.1.2 Name Role Value": "Missing accessible name, role, or value",
+                    "No WCAG 2.2 violation": "This pattern is fully accessible",
                 },
-                "label": None
             },
             "severity": {
                 "type": "score",
-                "instructions": f"Rate the accessibility severity (0=no issue, 1=minor, 2=moderate, 3=significant, 4=critical). Pattern: {pattern_desc}",
+                "instructions": "Rate the accessibility severity (0-4 scale).",
                 "criteria": [
-                    "0: No accessibility issue",
-                    "1: Minor issue, low impact",
-                    "2: Moderate issue, affects some users",
-                    "3: Significant issue, affects many users",
-                    "4: Critical issue, blocks access entirely"
+                    "0: No accessibility issue (fully accessible)",
+                    "1: Minor issue (low impact, easy workaround)",
+                    "2: Moderate issue (affects some users, medium impact)",
+                    "3: Significant issue (affects many users, high impact)",
+                    "4: Critical issue (blocks access entirely, severe impact)",
                 ],
-                "label": None
-            },
-            "is_accessible": {
-                "type": "noul",
-                "instructions": f"Is this HTML pattern fully accessible per WCAG 2.2? Pattern: {pattern_desc}",
-                "label": None
             },
         },
     })
-    
+
     return {
-        "pattern": pattern_desc,
-        "result": result,
+        "description": description,
+        "html": html,
+        "has_violation": prediction.get("has_violation"),
+        "which_criterion": prediction.get("which_criterion"),
+        "severity": prediction.get("severity"),
+        "raw_prediction": prediction,
     }
 
 
 def main():
-    # Example usage
-    print("Kev-WCAG Example Usage")
-    print("=" * 50)
-    
-    # Load model (replace with actual path after training)
-    model_path = "model/kev-wcag"
+    """Run demo evaluations on sample HTML patterns."""
+    print("=" * 70)
+    print("  Kev-WCAG Accessibility Evaluation Demo")
+    print("=" * 70)
+
+    # Load the trained model
+    model_path = "/kaggle/working/kev-wcag-model"
     print(f"Loading model from: {model_path}")
-    
-    # Note: Model needs to be trained first before running this example
-    print("\nTo use this example:")
-    print("1. Run the Kaggle training notebook first")
-    print("2. Save the trained model to model/kev-wcag/")
-    print("3. Run this script")
-    
-    # Example HTML patterns to test
-    examples = [
+    try:
+        model, tok = load_kev_model(model_path, device="cpu")
+        print(f"✓ Model loaded successfully: {type(model).__name__}")
+    except Exception as e:
+        print(f"✗ Failed to load model: {e}")
+        print("\nTo use this demo:")
+        print("1. First run the Kaggle training notebook:")
+        print("   https://www.kaggle.com/code/hummern/wcag-kev-train")
+        print("2. The notebook saves the trained model to /kaggle/working/kev-wcag-model/")
+        print("3. Then run this script again")
+        return
+
+    # Demo patterns covering different WCAG criteria
+    demo_patterns = [
         {
-            "desc": "Low contrast text",
-            "html": '<p style="color: #ddd; background: white;">Hard to read text</p>',
-        },
-        {
-            "desc": "Image without alt text",
             "html": '<img src="photo.jpg">',
+            "description": "Image without alt attribute",
         },
         {
-            "desc": "Properly labeled input",
-            "html": '<label for="email">Email</label><input type="email" id="email">',
+            "html": '<img src="ornament.svg" alt="">',
+            "description": "Decorative image with empty alt text (correct)",
+        },
+        {
+            "html": '<p style="color:#999; background:white;">Medium gray text on white</p>',
+            "description": "Low contrast text (WCAG 1.4.3 violation)",
+        },
+        {
+            "html": '<form><input type="text" placeholder="Name"></form>',
+            "description": "Form input without label (WCAG 3.3.2 violation)",
+        },
+        {
+            "html": '<a href="/page"><img src="product.jpg" alt="product"></a>',
+            "description": "Linked image without descriptive alt text",
+        },
+        {
+            "html": '<label for="email">Email address</label><input type="email" id="email">',
+            "description": "Properly labeled input (WCAG compliant)",
+        },
+        {
+            "html": '<button onclick="submit()">Submit</button>',
+            "description": "Button with accessible name from content",
+        },
+        {
+            "html": '<div role="button" aria-label="Close" onclick="close()">✕</div>',
+            "description": "Custom button with ARIA label (WCAG compliant)",
         },
     ]
-    
-    print("\nExample patterns:")
-    for i, ex in enumerate(examples, 1):
-        print(f"{i}. {ex['desc']}")
-        print(f"   HTML: {ex['html']}")
-    
-    print("\nSee evaluation/evaluate.py for full test suite")
+
+    print(f"\nEvaluating {len(demo_patterns)} HTML patterns:\n")
+    print("-" * 70)
+
+    results = []
+    for pattern in demo_patterns:
+        result = evaluate_html(model, tok, pattern["html"], pattern["description"])
+        results.append(result)
+
+        # Print result for this pattern
+        violation = "YES" if result["has_violation"] else "no"
+        criterion = result["which_criterion"] or "none"
+        severity = result["severity"] if result["severity"] is not None else "?"
+        print(f"Pattern: {result['description']}")
+        print(f"  HTML: {result['html']}")
+        print(f"  Violation: {violation}")
+        print(f"  Criterion: {criterion}")
+        print(f"  Severity: {severity}/4")
+        print()
+
+    # Summary statistics
+    correct_violation = sum(
+        1
+        for r in results
+        if (r["has_violation"] == True and "alt" not in r["html"].lower())
+        or (r["has_violation"] == False and "alt" in r["html"].lower() and ('alt=""' in r["html"] or 'aria-label' in r["html"] or 'label' in r["html"].lower()))
+    )
+    total = len(results)
+    print("-" * 70)
+    print(f"  Demo completed: {total} patterns evaluated")
+    print("  Note: This is a demo - for full evaluation see evaluation/evaluate.py")
+    print("=" * 70)
 
 
 if __name__ == "__main__":

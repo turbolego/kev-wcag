@@ -200,7 +200,7 @@ kev-wcag/
 │   ├── evaluate.py                   # Evaluation framework
 │   └── results.md                    # Test results and comparison
 ├── examples/
-│   └── inference_example.py          # Usage example
+│   └── inference_example.py          # Usage example (see also demo.py)
 ├── docs/
 │   └── training_guide.md             # Training step-by-step guide
 ├── copilot-kaggle-debug.md           # Debug analysis from Copilot

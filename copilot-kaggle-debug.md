@@ -159,6 +159,16 @@ What we need now is to verify what is inside it and whether it is actually the a
 
 Best way to verify it from Kaggle
 
+NOTE (v61): The original analysis used `PeftModel.from_pretrained()` which caused `Qwen2Tokenizer has no attribute parameters` errors. The correct approach is to use Kev's `Checkpoint.load()` API:
+
+```python
+from kev.checkpoint import Checkpoint
+ckpt = Checkpoint("/kaggle/working/kev-wcag")
+model, tok = ckpt.load("cuda")
+```
+
+This loads the base model + adapter + head in one call. See the notebook's Cell 3 for the complete verification pipeline.
+
 Run this in the same Kaggle notebook, after training:
 
 from pathlib import Path
